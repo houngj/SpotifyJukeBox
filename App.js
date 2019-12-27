@@ -3,31 +3,108 @@ import { TouchableOpacity, StyleSheet, Text, View, Image } from 'react-native';
 import { AuthSession } from 'expo';
 import { FontAwesome } from '@expo/vector-icons';
 import axios from 'axios';
+import { encode as btoa } from 'base-64';
+import SpotifyWebAPI from 'spotify-web-api-js';
 
-const CLIENT_ID = '';
+const CLIENT_ID = 'cf1ba32e32674774a2de3e817f4dd5d1';
+const CLIENT_SECRET = '3766d7bbb6cb434eb8200bb867a754e0';
+
+const scopesArr = ['user-modify-playback-state','user-read-currently-playing','user-read-playback-state','user-library-modify',
+                   'user-library-read','playlist-read-private','playlist-read-collaborative','playlist-modify-public',
+                   'playlist-modify-private','user-read-recently-played','user-top-read', 'user-read-email'];
+const scopes = scopesArr.join(' ');
 
 export default class HelloWorldApp extends Component {
   state = {
     userInfo: null,
-    didError: false
+    didError: false,
+    accessToken: null,
+    refreshToken: null,
+    expiresIn: null,
+    playlists: null
   };
 
-  handleSpotifyLogin = async () => {
+  getPlaylists = async () => {
+    await this.setValidToken();
+    let playlists = await axios.get(`https://api.spotify.com/v1/me/playlists?limit=1&offset=0`, {
+      headers: {
+        "Authorization": `Bearer ${this.state.accessToken}`
+      }
+    });
+    
+    //this.setState({playlists: playlists.items[0]})
+  }
+
+  getAuthResult = async () => {
     let redirectUrl = AuthSession.getRedirectUrl();
     let results = await AuthSession.startAsync({
-      authUrl: `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUrl)}&scope=user-read-email&response_type=token`
+      authUrl: `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUrl)}&scope=${encodeURIComponent(scopes)}&response_type=code`
     });
-    if (results.type !== 'success') {
-      console.log(results.type);
-      this.setState({ didError: true });
-    } else {
-      const userInfo = await axios.get(`https://api.spotify.com/v1/me`, {
+
+    return results.params.code;
+  }
+
+  setTokens = async(results) => {
+    let redirectUrl = AuthSession.getRedirectUrl();
+    const authorizationCode = await this.getAuthResult();
+    const credsB64 = btoa(`${CLIENT_ID}:${CLIENT_SECRET}`);
+    const response = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${credsB64}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: `grant_type=authorization_code&code=${authorizationCode}&redirect_uri=${
+        redirectUrl
+      }`,
+    });
+  
+    const responseJson = await response.json();
+    const expirationTime = new Date().getTime() + responseJson.expiresIn * 1000;
+    this.setState({accessToken: responseJson.accessToken})
+    this.setState({refreshToken: responseJson.refreshToken})
+    this.setState({expiresIn: expirationTime})
+  };
+
+  refreshTokens = async () => {
+    try {
+      const credsB64 = btoa(`${CLIENT_ID}:${CLIENT_SECRET}`);
+      const refreshToken = this.state.refreshToken;
+      const response = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
         headers: {
-          "Authorization": `Bearer ${results.params.access_token}`
-        }
+          Authorization: `Basic ${credsB64}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `grant_type=refresh_token&refresh_token=${refreshToken}`,
       });
-      this.setState({ userInfo: userInfo.data });
+      const responseJson = await response.json();
+      if (responseJson.error) {
+        await this.setTokens();
+      } else {
+        this.setState({accessToken: responseJson.newAccessToken})
+        if(newRefreshToken) {
+          this.setState({refreshToken: responseJson.newRefreshToken})
+        }
+        const expirationTime = new Date().getTime() + responseJson.expiresIn * 1000;
+        this.setState({expiresIn: expirationTime})
+      }
+    } catch (err) {
+      console.error(err)
     }
+  };  
+
+  setValidToken = async () => {
+    const tokenExpirationTime = this.state.expiresIn;
+    if (new Date().getTime() > tokenExpirationTime) {
+      // access token has expired, so we need to use the refresh token
+      await this.refreshTokens();
+    }
+  }
+
+  handleSpotifyLogin = async () => {
+    await this.setTokens();
+    await this.getPlaylists();
   };
 
   displayError = () => {
@@ -41,20 +118,15 @@ export default class HelloWorldApp extends Component {
   }
 
   displayResults = () => {
-    { return this.state.userInfo ? (
+    { return this.state.playlists ? (
       <View style={styles.userInfo}>
         <View>
+          
           <Text style={styles.userInfoText}>
-            Username:
+            Playlists:
           </Text>
           <Text style={styles.userInfoText}>
-            {this.state.userInfo.id}
-          </Text>
-          <Text style={styles.userInfoText}>
-            Email:
-          </Text>
-          <Text style={styles.userInfoText}>
-            {this.state.userInfo.email}
+            {this.state.playlists}
           </Text>
         </View>
       </View>
@@ -78,7 +150,7 @@ export default class HelloWorldApp extends Component {
         <TouchableOpacity
           style={styles.button}
           onPress={this.handleSpotifyLogin}
-          disabled={this.state.userInfo ? true : false}
+          disabled={this.state.playlists ? true : false}
         >
           <Text style={styles.buttonText}>
             Login with Spotify
